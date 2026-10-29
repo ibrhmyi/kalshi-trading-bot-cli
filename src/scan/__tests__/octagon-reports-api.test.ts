@@ -232,6 +232,34 @@ d4('recovery hardening', () => {
   }, 15_000);
 });
 
+// ─── Poll GETs bounded by the generation deadline (#52) ─────────────────────
+// Every status poll runs with its own full REQUEST_TIMEOUT_MS plus up to 3
+// retries (5/15/30s), none of which knew about the caller's deadline — a
+// failing API could hold generateReportAndWait ~290s past timeoutMs. The
+// deadline must now bound each attempt and retry sleep.
+d4('poll GETs bounded by the generation deadline', () => {
+  t4('failing status polls reject at the deadline, not ~50s of retries later', async () => {
+    // Instant 502 on every GET: retryable, so the old code would keep
+    // Instant 502 on the status polls: retryable, so the old code would keep
+    // retrying (5s + 15s + 30s delays + 4 attempts) long past the deadline.
+    // The pre-POST baseline GET stays healthy so we reach the poll loop.
+    responder = (url, init) => {
+      if (init?.method === 'POST') return json(202, { run_id: 'run-d', status: 'processing', event_ticker: 'KXTEST-26', venue: 'kalshi' });
+      if (url.includes('/status/')) return new Response('bad gateway', { status: 502 });
+      return json(200, { event_ticker: 'KXTEST-26', venue: 'kalshi', requested_url: null, versions: [], markdown_report: null, run_id: null });
+    };
+    const started = Date.now();
+    const SENTINEL = 'sentinel: still retrying past the deadline';
+    await e4(
+      Promise.race([
+        generateReportAndWait('KXTEST-26', { pollIntervalMs: 10, timeoutMs: 100 }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(SENTINEL)), 2_000)),
+      ]),
+    ).rejects.toThrow(/timed out/i);
+    e4(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
 // ─── Deadline during the body read ──────────────────────────────────────────
 // fetchWithDeadline keeps its deadline armed until the body is read, so it can
 // fire after the headers arrive. That abort must be the same "timed out" error
