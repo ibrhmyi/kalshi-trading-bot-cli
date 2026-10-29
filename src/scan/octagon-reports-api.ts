@@ -253,12 +253,17 @@ async function requestJson<T>(
 
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
+    let remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
     if (remaining <= 0) throw timedOut();
     if (attempt > 0) {
       const delay = Math.min(GET_RETRY_DELAYS[attempt - 1], remaining);
       logger.info(`[reports-api] retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries + 1})`);
       await new Promise((r) => setTimeout(r, delay));
+      // Recalculate after the sleep: a retry delay can consume the remaining
+      // budget, and the request timeout below must never outlive the deadline
+      // (CodeRabbit review on the deadline PR).
+      remaining = deadline === undefined ? Number.POSITIVE_INFINITY : deadline - Date.now();
+      if (remaining <= 0) throw timedOut();
     }
     // The deadline stays armed through the body read, so read the body inside
     // this try too. An abort there has to become the same "timed out" error:

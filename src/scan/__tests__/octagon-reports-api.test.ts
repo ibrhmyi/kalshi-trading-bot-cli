@@ -258,6 +258,36 @@ d4('poll GETs bounded by the generation deadline', () => {
     ).rejects.toThrow(/timed out/i);
     e4(Date.now() - started).toBeLessThan(2_000);
   });
+
+  t4('a retry sleep never lets the next request outlive the deadline', async () => {
+    // First status poll: instant 502 (retryable). Second: hangs forever. With
+    // the pre-repair code the request timeout was computed before the retry
+    // sleep, so the hanging GET's abort fired a full request-timeout past the
+    // generation deadline. The delay must be re-derived after the sleep.
+    let statusGets = 0;
+    responder = (url, init) => {
+      if (init?.method === 'POST') return json(202, { run_id: 'run-e', status: 'processing', event_ticker: 'KXTEST-26', venue: 'kalshi' });
+      if (url.includes('/status/')) {
+        statusGets += 1;
+        if (statusGets === 1) return new Response('bad gateway', { status: 502 });
+        return new Promise<Response>((_, reject) => {
+          // Never resolves on its own, but must reject when the client
+          // aborts — real fetch rejects on the AbortController signal.
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        });
+      }
+      return json(200, { event_ticker: 'KXTEST-26', venue: 'kalshi', requested_url: null, versions: [], markdown_report: null, run_id: null });
+    };
+    const started = Date.now();
+    await e4(
+      generateReportAndWait('KXTEST-26', { pollIntervalMs: 10, timeoutMs: 250 }),
+    ).rejects.toThrow(/timed out/i);
+    // The retry sleep alone can consume the whole budget; anything materially
+    // past the deadline means a request timeout outlived it.
+    e4(Date.now() - started).toBeLessThan(450);
+  });
 });
 
 // ─── Deadline during the body read ──────────────────────────────────────────
